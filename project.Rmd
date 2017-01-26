@@ -1,0 +1,116 @@
+---
+title: "Weight Lifting Exercise Prediction"
+author: "Daniel Hertenstein"
+date: "January 26, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+
+Using multiple machine learning algorithms, we predict the quality of exercise from a data set of different weight lifting exercises. Study participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Among the three prediction algorithms used, we found that a boosted random forest algorithm had a > 95% accuracy for an independent test set.
+
+```{r, message=FALSE, warning=FALSE}
+library(caret)
+library(rpart)
+library(gbm)
+library(survival)
+library(splines)
+library(parallel)
+library(plyr)
+library(MASS)
+library(mgcv)
+library(nlme)
+```
+
+## Loading the Data
+
+```{r}
+training <- read.csv('pml-training.csv', na.strings=c("NA", ""))
+testing <- read.csv('pml-testing.csv', na.strings=c("NA", ""))
+dim(training)
+dim(testing)
+```
+
+## Data Cleaning
+
+No codebook could be located for the dataset, so I have chosen to ignore all of the variables that do not seem be be related to senor data and include all other variables. Even though there are variables that are mostly NaN's, without a codebook, I cannot rule out that those distributions of values are significantly important, so I keep them.
+
+```{r}
+training <- subset(training, select=-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+testing <- subset(testing, select=-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+```
+
+Additionally, our models don't like columns with NA values, so I will remove the columns that have NA values in the training set from both the training set and the test set. We do need to check that there aren't additional columns in the test set that have NA values. We should also check that none of the variables have near zero variance.
+
+```{r}
+
+
+na_training <- apply(training, 2, function (x) !any(is.na(x)))
+training <- training[, na_training]
+testing <- testing[, na_training]
+sum(apply(testing, 2, function (x) any(is.na(x))))
+near_zero <- nearZeroVar(training, saveMetrics=TRUE)
+sum(near_zero$zeroVar)
+sum(near_zero$nzv)
+```
+
+## Data Slicing for Cross Validation
+
+We split the training dataset 60/40 so that we can have an additional testing dataest to get a better estimate of our out of sample error for our various models.
+
+```{r}
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+our_training <- training[inTrain, ]
+our_testing <- training[-inTrain, ]
+dim(our_training)
+```
+
+
+## Model Creation
+
+The three models I have chosen as candidates are a decision tree, boosted random forests, and model based prediction (as these are the prominent examples used in the course).
+
+```{r}
+treeMod <- train(classe ~ ., method='rpart', data=our_training)
+treePred <- predict(treeMod, newdata=our_testing)
+gbmMod <- train(classe ~ ., method='gbm', data=our_training, verbose=FALSE)
+gbmPred <- predict(gbmMod, newdata=our_testing)
+ldaMod <- train(classe ~ ., method='lda', data=our_training)
+ldaPred <- predict(ldaMod, newdata=our_testing)
+```
+
+## Cross Validation
+
+Though each of our models automatically use some form of cross validation during their training, we must use an independent data set to get a true reflection of the out of sample error rate for picking the best model. Since we subdivided our training set at the beginning, we now have another test set that we can use for cross validation. Here are the error rates for the three methods used:
+
+```{r}
+confusionMatrix(our_testing$classe, treePred)
+confusionMatrix(our_testing$classe, gbmPred)
+confusionMatrix(our_testing$classe, ldaPred)
+```
+
+The boosted random forests produce a higher accruacy and one close to 100%. Let's try combining our predictors to see if we can get closer to 100% accruacy. We have three models and will use a simple majority rule to determine the prediction.
+
+```{r, warning=FALSE}
+predictions <- data.frame(treePred, gbmPred, ldaPred, classe=our_testing$classe)
+combinedMod <- train(classe ~ ., method='gam', data=predictions)
+combniedPred <- predict(combinedMod, predictions)
+confusionMatrix(our_testing$classe, combniedPred)
+```
+
+Combining these predictors actually drastically lowered the accuracy, so I will just use the boosted random forest model with the real test set.
+
+### Sample Error
+
+Because cross validation isn't a perfect solution for lowering out of sample error and our model is now biased towards our test set since we selected the final model based on that sample error, we know that the sample error for the real test set will likely be larger than the above errors.
+
+## Using the Test Set
+
+And now we can use our model on the test data. Let's hope that we are right!
+```{r}
+predict(gbmMod, testing)
+```
